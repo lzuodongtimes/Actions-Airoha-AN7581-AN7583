@@ -36,23 +36,10 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/pbs05/ponwrt.git ponwrt
 
-      - name: Update feeds and add custom packages
+      - name: Update and install feeds
         run: |
           cd ponwrt
           ./scripts/feeds update -a
-
-          mkdir -p package/custom
-          git clone --depth=1 https://github.com/eamonxg/luci-theme-aurora.git package/custom/luci-theme-aurora
-          git clone --depth=1 https://github.com/sirpdboy/luci-app-ddns-go.git package/custom/luci-app-ddns-go
-          git clone --depth=1 https://github.com/stackia/rtp2httpd.git package/custom/rtp2httpd
-
-          if ! find feeds/ -maxdepth 4 -name "luci-app-arpbind" | grep -q .; then
-            git clone --depth=1 --filter=blob:none --sparse https://github.com/immortalwrt/luci.git /tmp/imm-luci
-            git -C /tmp/imm-luci sparse-checkout set applications/luci-app-arpbind
-            mv /tmp/imm-luci/applications/luci-app-arpbind package/custom/
-            rm -rf /tmp/imm-luci
-          fi
-
           ./scripts/feeds install -a
 
       - name: Apply custom files and device config
@@ -64,7 +51,7 @@ jobs:
           cp configs/xg-040g-md.config ponwrt/.config
           cd ponwrt
           make defconfig
-          grep -E "luci-theme-aurora|ttyd|filemanager|wol|wireguard|arpbind|ddns-go|rtp2httpd|miniupnpd-nftables|upnp" .config || true
+          grep -E "TARGET_airoha|nokia_xg-040g-md-ubi|PON|pon" .config | head -n 40 || true
 
       - name: Download sources and compile firmware
         run: |
