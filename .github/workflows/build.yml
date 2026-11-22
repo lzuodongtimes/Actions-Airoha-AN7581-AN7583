@@ -7,7 +7,6 @@ on:
     paths:
       - '.github/workflows/build.yml'
       - 'configs/**'
-      - 'files/**'
 
 permissions:
   contents: write
@@ -40,18 +39,15 @@ jobs:
         run: |
           cd ponwrt
           ./scripts/feeds update -a
+          mkdir -p package/custom
+          git clone --depth=1 https://github.com/eamonxg/luci-theme-aurora.git package/custom/luci-theme-aurora
           ./scripts/feeds install -a
 
-      - name: Apply custom files and device config
+      - name: Configure device build
         run: |
-          mkdir -p ponwrt/files
-          if [ -d files ] && [ "$(ls -A files)" ]; then
-            cp -r files/* ponwrt/files/
-          fi
           cp configs/xg-040g-md.config ponwrt/.config
           cd ponwrt
           make defconfig
-          grep -E "TARGET_airoha|nokia_xg-040g-md-ubi|PON|pon" .config | head -n 40 || true
 
       - name: Download sources and compile firmware
         run: |
