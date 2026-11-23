@@ -41,13 +41,17 @@ jobs:
           cd ponwrt
           ./scripts/feeds update -a
           ./scripts/feeds install -a
+          git clone --depth=1 https://github.com/eamonxg/luci-theme-aurora.git package/luci-theme-aurora
+          rm -rf package/luci-theme-aurora/.git
           df -h
 
-      - name: Apply official an7581.config with Chinese
+      - name: Apply official an7581.config with Chinese and Aurora theme
         run: |
           cd ponwrt
           cp configs/an7581.config .config
           echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y" >> .config
+          echo "CONFIG_PACKAGE_luci-theme-aurora=y" >> .config
+          echo "CONFIG_PACKAGE_luci-i18n-aurora-zh-cn=y" >> .config
           make defconfig
           mkdir -p files/etc/config
           cat << 'EOF' > files/etc/config/luci
