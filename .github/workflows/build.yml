@@ -1,4 +1,4 @@
-name: Build PonWrt for XG-040G-MD
+name: Build PonWrt for AN7581 (XG-040G-MD)
 
 on:
   workflow_dispatch:
@@ -6,7 +6,6 @@ on:
     branches: [ main ]
     paths:
       - '.github/workflows/build.yml'
-      - 'configs/**'
 
 permissions:
   contents: write
@@ -27,9 +26,9 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential clang flex bison g++ gawk \
-            gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
-            python3-setuptools rsync swig unzip zlib1g-dev file wget curl
+          sudo apt-get install -y build-essential bzip2 ccache clang cmake cpio curl \
+            device-tree-compiler flex g++ gawk gcc-multilib g++-multilib gettext git \
+            libncurses-dev libssl-dev python3-setuptools rsync swig unzip zlib1g-dev file wget
 
       - name: Clone pbs05/ponwrt
         run: |
@@ -43,11 +42,14 @@ jobs:
           git clone --depth=1 https://github.com/eamonxg/luci-theme-aurora.git package/custom/luci-theme-aurora
           ./scripts/feeds install -a
 
-      - name: Configure device build
+      - name: Apply official an7581.config with Chinese and Aurora
         run: |
-          cp configs/xg-040g-md.config ponwrt/.config
           cd ponwrt
+          cp configs/an7581.config .config
+          echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y" >> .config
+          echo "CONFIG_PACKAGE_luci-theme-aurora=y" >> .config
           make defconfig
+          grep -E "nokia_xg-040g-md-ubi|CONFIG_PACKAGE_luci=|luci-i18n-base-zh-cn|luci-theme-aurora|pon" .config | head -n 40
 
       - name: Download sources and compile firmware
         run: |
@@ -59,6 +61,6 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ponwrt-xg-040g-md
+          name: ponwrt-an7581
           path: ponwrt/bin/targets/airoha/an7581/*
           if-no-files-found: warn
