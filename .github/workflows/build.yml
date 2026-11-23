@@ -19,7 +19,8 @@ jobs:
 
       - name: Free up disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost /opt/pipx /root/.cache
           docker system prune -af --volumes || true
           df -h
 
@@ -33,6 +34,7 @@ jobs:
       - name: Clone pbs05/ponwrt
         run: |
           git clone --depth=1 https://github.com/pbs05/ponwrt.git ponwrt
+          rm -rf ponwrt/.git
 
       - name: Update and install feeds
         run: |
@@ -41,6 +43,8 @@ jobs:
           ./scripts/feeds install -a
           mkdir -p package/custom
           git clone --depth=1 https://github.com/eamonxg/luci-theme-aurora.git package/custom/luci-theme-aurora
+          rm -rf package/custom/luci-theme-aurora/.git
+          df -h
 
       - name: Apply official an7581.config with Chinese and Aurora
         run: |
@@ -62,6 +66,8 @@ jobs:
           make download -j8
           find dl -size -1024c -exec rm -f {} \; || true
           make -j$(nproc)
+          rm -rf dl/*
+          df -h
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
