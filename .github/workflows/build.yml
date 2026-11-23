@@ -74,3 +74,14 @@ jobs:
           name: ponwrt-an7581
           path: ponwrt/bin/targets/airoha/an7581/*
           if-no-files-found: warn
+
+      - name: Release firmware
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: PonWrt AN7581 Build #${{ github.run_number }}
+          files: |
+            ponwrt/bin/targets/airoha/an7581/*-sysupgrade.bin
+            ponwrt/bin/targets/airoha/an7581/*.itb
+            ponwrt/bin/targets/airoha/an7581/sha256sums
+          fail_on_unmatched_files: false
