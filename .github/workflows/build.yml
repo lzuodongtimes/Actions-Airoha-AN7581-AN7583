@@ -1,7 +1,7 @@
 name: Build PonWrt for AN7581 (XG-040G-MD)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
   push:
     branches: [ main ]
     paths:
@@ -38,9 +38,9 @@ jobs:
         run: |
           cd ponwrt
           ./scripts/feeds update -a
+          ./scripts/feeds install -a
           mkdir -p package/custom
           git clone --depth=1 https://github.com/eamonxg/luci-theme-aurora.git package/custom/luci-theme-aurora
-          ./scripts/feeds install -a
 
       - name: Apply official an7581.config with Chinese and Aurora
         run: |
