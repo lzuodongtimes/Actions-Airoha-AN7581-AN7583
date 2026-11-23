@@ -49,6 +49,11 @@ jobs:
           echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y" >> .config
           echo "CONFIG_PACKAGE_luci-theme-aurora=y" >> .config
           make defconfig
+          mkdir -p files/etc/config
+          cat << 'EOF' > files/etc/config/luci
+          config core main
+          	option lang 'zh_cn'
+          EOF
           grep -E "nokia_xg-040g-md-ubi|CONFIG_PACKAGE_luci=|luci-i18n-base-zh-cn|luci-theme-aurora|pon" .config | head -n 40
 
       - name: Download sources and compile firmware
