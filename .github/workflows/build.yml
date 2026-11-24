@@ -41,7 +41,17 @@ jobs:
 
           if [ "$SHOULD_BUILD" = "true" ]; then
             git clone --depth=1 https://github.com/pbs05/ponwrt.git /tmp/check-ponwrt
-            CONFIG_LIST=$(find /tmp/check-ponwrt/configs -maxdepth 1 -name '*.config' -exec basename {} .config \; | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            # 只保留带完整 target 的整机配置（an7581 / an7583）；
+            # release.config 只是几个包的追加片段，没有 CONFIG_TARGET_*，单独编会退到默认
+            # mediatek/filogic 目标，内核 kconfig 交互提问直接失败
+            ALL=$(find /tmp/check-ponwrt/configs -maxdepth 1 -name '*.config' -exec basename {} .config \;)
+            KEEP=""
+            for c in $ALL; do
+              if grep -q "^CONFIG_TARGET_air" "/tmp/check-ponwrt/configs/$c.config"; then
+                KEEP="$KEEP $c"
+              fi
+            done
+            CONFIG_LIST=$(echo $KEEP | tr ' ' '\n' | jq -R -s -c 'split("\n") | map(select(length > 0))')
             rm -rf /tmp/check-ponwrt
             echo "Detected configs: $CONFIG_LIST"
             echo "configs=$CONFIG_LIST" >> "$GITHUB_OUTPUT"
@@ -116,15 +126,41 @@ jobs:
           # 源码默认选的是 Argon，这里换成 Aurora
           sed -i 's/^CONFIG_PACKAGE_luci-theme-argon=y/# CONFIG_PACKAGE_luci-theme-argon is not set/' .config
           grep -q "CONFIG_PACKAGE_luci-theme-aurora" .config || echo "CONFIG_PACKAGE_luci-theme-aurora=y" >> .config
+
+          # 只保留 xg-040g-md（an7581 目标）和 xg-040g-mf（an7583 目标）两个设备
+          case "${{ matrix.config_name }}" in
+            an7581)
+              TARGET=airoha_an7581
+              DEVICES="nokia_xg-040g-md-ubi nokia_xg-040g-md-ubi-usb-sfp"
+              ;;
+            an7583)
+              TARGET=airoha_an7583
+              DEVICES="nokia_xg-040g-mf nokia_xg-040g-mf-ubi"
+              ;;
+            *)
+              TARGET=""
+              DEVICES=""
+              ;;
+          esac
+          if [ -n "$DEVICES" ]; then
+            grep -vE "^CONFIG_TARGET_DEVICE_${TARGET}_DEVICE_" .config > .config.tmp
+            grep -vE "^CONFIG_TARGET_DEVICE_PACKAGES_${TARGET}_DEVICE_" .config.tmp > .config
+            rm -f .config.tmp
+            for d in $DEVICES; do
+              echo "CONFIG_TARGET_DEVICE_${TARGET}_DEVICE_${d}=y" >> .config
+              echo "CONFIG_TARGET_DEVICE_PACKAGES_${TARGET}_DEVICE_${d}=\"\"" >> .config
+            done
+          fi
+
           make defconfig
-          grep -E "^CONFIG_LUCI_LANG_zh_Hans=|^CONFIG_PACKAGE_luci-theme-" .config
+          grep -E "^CONFIG_TARGET_DEVICE_airoha_an758[13]_DEVICE_.*=y" .config
 
       - name: Download sources, compile, collect outputs, and clean all junk
         run: |
           cd /tmp/pw
           make download -j8
           find dl -size -1024c -exec rm -f {} \; || true
-          make -j$(nproc) || make -j1 V=s
+          make -j$(nproc) || yes "" | make -j1 V=s
 
           # 文件名沿用源码默认（本来就是 immortalwrt- 开头），不做任何重命名
           mkdir -p "${{ github.workspace }}/release-files/${{ matrix.config_name }}"
