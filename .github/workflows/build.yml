@@ -154,6 +154,7 @@ jobs:
 
           make defconfig
           grep -E "^CONFIG_TARGET_DEVICE_airoha_an758[13]_DEVICE_.*=y" .config
+          grep -E "^CONFIG_LUCI_LANG_zh_Hans=|^CONFIG_PACKAGE_luci-theme-" .config
 
       - name: Download sources, compile, collect outputs, and clean all junk
         run: |
@@ -162,7 +163,18 @@ jobs:
           find dl -size -1024c -exec rm -f {} \; || true
           make -j$(nproc) || yes "" | make -j1 V=s
 
-          # 文件名沿用源码默认（本来就是 immortalwrt- 开头），不做任何重命名
+          # 源码默认前缀来自 VERSION_DIST=PonWrt，产物是 ponwrt-*，这里改名成 immortalwrt-*
+          find bin/targets -type f -name "ponwrt-*" | while read -r f; do
+            dir=$(dirname "$f")
+            base=$(basename "$f")
+            new_base="${base/#ponwrt/immortalwrt}"
+            mv "$f" "$dir/$new_base"
+          done
+          # 目录里的 sha256sums 同步改文件名（文件内容没变，校验值仍然有效）
+          find bin/targets -name sha256sums -type f | while read -r s; do
+            sed -i 's/ponwrt-/immortalwrt-/g' "$s"
+          done
+
           mkdir -p "${{ github.workspace }}/release-files/${{ matrix.config_name }}"
           find bin/targets -type f \( -name "*.bin" -o -name "*.itb" -o -name "*.fip" -o -name "sha256sums" \) \
             -exec cp {} "${{ github.workspace }}/release-files/${{ matrix.config_name }}/" \;
