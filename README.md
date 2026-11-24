@@ -1,1 +1,2 @@
 # Actions-Airoha-AN7581-AN7583
+XG-040G-MD (AN7581)
