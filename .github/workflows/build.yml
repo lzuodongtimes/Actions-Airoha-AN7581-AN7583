@@ -6,43 +6,83 @@ on:
     branches: [ main ]
     paths:
       - '.github/workflows/build.yml'
+  schedule:
+    - cron: '0 */6 * * *'
 
 permissions:
   contents: write
 
 jobs:
-  detect-configs:
+  check-upstream:
     runs-on: ubuntu-24.04
     outputs:
-      configs: ${{ steps.scan.outputs.configs }}
+      should_build: ${{ steps.check.outputs.should_build }}
+      configs: ${{ steps.check.outputs.configs }}
+      upstream_sha: ${{ steps.check.outputs.upstream_sha }}
     steps:
-      - name: Scan all configs in pbs05/ponwrt
-        id: scan
+      - name: Check pbs05/ponwrt updates and scan configs
+        id: check
         run: |
-          git clone --depth=1 https://github.com/pbs05/ponwrt.git ponwrt
-          ls -la ponwrt/configs
-          CONFIG_LIST=$(find ponwrt/configs -maxdepth 1 -name '*.config' -exec basename {} .config \; | jq -R -s -c 'split("\n") | map(select(length > 0))')
-          echo "Detected configs: $CONFIG_LIST"
-          echo "configs=$CONFIG_LIST" >> "$GITHUB_OUTPUT"
+          UPSTREAM_SHA=$(git ls-remote https://github.com/pbs05/ponwrt.git HEAD | awk '{print $1}')
+          echo "Latest pbs05/ponwrt HEAD: $UPSTREAM_SHA"
+          echo "upstream_sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
+
+          LAST_SHA=$(gh release list --repo "${{ github.repository }}" --limit 10 --json tagName,body \
+            | jq -r '.[] | select(.tagName | startswith("ponwrt-all-")) | .body' \
+            | grep -oE 'upstream_sha:[[:space:]]*[0-9a-f]{40}' | head -n1 | awk '{print $2}' || true)
+          echo "Last built upstream SHA: ${LAST_SHA:-none}"
+
+          if [ "${{ github.event_name }}" != "schedule" ] || [ -z "$LAST_SHA" ] || [ "$UPSTREAM_SHA" != "$LAST_SHA" ]; then
+            SHOULD_BUILD="true"
+          else
+            SHOULD_BUILD="false"
+          fi
+          echo "should_build=$SHOULD_BUILD" >> "$GITHUB_OUTPUT"
+
+          if [ "$SHOULD_BUILD" = "true" ]; then
+            git clone --depth=1 https://github.com/pbs05/ponwrt.git /tmp/check-ponwrt
+            CONFIG_LIST=$(find /tmp/check-ponwrt/configs -maxdepth 1 -name '*.config' -exec basename {} .config \; | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            rm -rf /tmp/check-ponwrt
+            echo "Detected configs: $CONFIG_LIST"
+            echo "configs=$CONFIG_LIST" >> "$GITHUB_OUTPUT"
+          else
+            echo "No upstream changes detected. Skipping firmware build."
+            echo "configs=[]" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   build:
-    needs: detect-configs
+    needs: check-upstream
+    if: ${{ needs.check-upstream.outputs.should_build == 'true' }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        config_name: ${{ fromJson(needs.detect-configs.outputs.configs) }}
+        config_name: ${{ fromJson(needs.check-upstream.outputs.configs) }}
     steps:
       - name: Checkout config repo
         uses: actions/checkout@v4
 
       - name: Free up disk space before build
         run: |
+          # 只删 runner 预装的、编译用不到的组件，不动编译工具链
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL \
-            /usr/local/share/boost /opt/pipx /root/.cache /tmp/* /var/tmp/*
+            /usr/local/share/boost /opt/pipx /usr/share/swift /usr/share/miniconda \
+            /root/.cache /tmp/* /var/tmp/* || true
           sudo apt-get clean && sudo rm -rf /var/lib/apt/lists/*
           docker system prune -af --volumes || true
-          df -h
+          df -h / /mnt 2>/dev/null || df -h
+
+          FREE_GB=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
+          echo "Free on /: ${FREE_GB}G"
+          if [ "${FREE_GB:-0}" -lt 20 ]; then
+            echo "::warning::磁盘可用空间不足 20G，再清一轮"
+            sudo rm -rf /usr/local/go /usr/local/.ghcup /opt/microsoft /usr/local/share/powershell || true
+            sudo rm -rf /tmp/* /var/tmp/* || true
+            sudo apt-get clean
+            df -h /
+          fi
 
       - name: Install build dependencies
         run: |
@@ -52,59 +92,49 @@ jobs:
             libncurses-dev libssl-dev python3-setuptools rsync swig unzip zlib1g-dev file wget jq
           sudo apt-get clean && sudo rm -rf /var/lib/apt/lists/*
 
-      - name: Clone pbs05/ponwrt
+      - name: Clone pbs05/ponwrt and Aurora theme
         run: |
-          git clone --depth=1 https://github.com/pbs05/ponwrt.git ponwrt
-          rm -rf ponwrt/.git
+          # 保留 .git：version.mk 依赖 git describe 生成版本号，删掉会让 base-files 变成 xxx-unknown
+          git clone --depth=1 https://github.com/pbs05/ponwrt.git /tmp/pw
+          git -C /tmp/pw tag -f v0.0.0-build 2>/dev/null || true
+          git -C /tmp/pw describe --tags --always
+
+          # luci-theme-aurora：仓库内已带编译好的静态资源，直接当本地 package 用，无需 npm 构建
+          git clone --depth=1 https://github.com/eamonxg/luci-theme-aurora.git /tmp/pw/package/luci-theme-aurora
+          rm -rf /tmp/pw/package/luci-theme-aurora/.git
 
       - name: Update and install feeds
         run: |
-          cd ponwrt
+          cd /tmp/pw
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-          df -h
 
-      - name: Apply ${{ matrix.config_name }}.config with Chinese and Argon theme
+      - name: Apply ${{ matrix.config_name }}.config with Aurora theme
         run: |
-          cd ponwrt
+          cd /tmp/pw
           cp "configs/${{ matrix.config_name }}.config" .config
-          cat << 'EOF' >> .config
-          CONFIG_PACKAGE_luci=y
-          CONFIG_PACKAGE_luci-base=y
-          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
-          CONFIG_PACKAGE_luci-theme-bootstrap=y
-          CONFIG_PACKAGE_luci-theme-argon=y
-          CONFIG_PACKAGE_rpcd=y
-          CONFIG_PACKAGE_rpcd-mod-luci=y
-          CONFIG_PACKAGE_uhttpd=y
-          CONFIG_PACKAGE_uhttpd-mod-ubus=y
-          EOF
+          # 源码默认选的是 Argon，这里换成 Aurora
+          sed -i 's/^CONFIG_PACKAGE_luci-theme-argon=y/# CONFIG_PACKAGE_luci-theme-argon is not set/' .config
+          grep -q "CONFIG_PACKAGE_luci-theme-aurora" .config || echo "CONFIG_PACKAGE_luci-theme-aurora=y" >> .config
           make defconfig
-          grep -E "CONFIG_PACKAGE_luci-theme-|CONFIG_PACKAGE_luci-i18n-base-zh-cn" .config || true
+          grep -E "^CONFIG_LUCI_LANG_zh_Hans=|^CONFIG_PACKAGE_luci-theme-" .config
 
-          mkdir -p files/etc/uci-defaults
-          cat << 'EOF' > files/etc/uci-defaults/zz-99-custom-luci
-          uci set luci.main.lang='zh_cn'
-          uci set luci.main.mediaurlbase='/luci-static/argon'
-          uci set luci.themes.Argon='/luci-static/argon'
-          uci commit luci
-          exit 0
-          EOF
-          chmod +x files/etc/uci-defaults/zz-99-custom-luci
-
-      - name: Download sources, compile, and clean build junk
+      - name: Download sources, compile, collect outputs, and clean all junk
         run: |
-          cd ponwrt
+          cd /tmp/pw
           make download -j8
           find dl -size -1024c -exec rm -f {} \; || true
           make -j$(nproc) || make -j1 V=s
 
-          mkdir -p ../release-files/${{ matrix.config_name }}
-          find bin/targets -type f \( -name "*-sysupgrade.bin" -o -name "*.itb" -o -name "sha256sums" \) \
-            -exec cp {} ../release-files/${{ matrix.config_name }}/ \;
+          # 文件名沿用源码默认（本来就是 immortalwrt- 开头），不做任何重命名
+          mkdir -p "${{ github.workspace }}/release-files/${{ matrix.config_name }}"
+          find bin/targets -type f \( -name "*.bin" -o -name "*.itb" -o -name "*.fip" -o -name "sha256sums" \) \
+            -exec cp {} "${{ github.workspace }}/release-files/${{ matrix.config_name }}/" \;
 
-          rm -rf dl/* build_dir/target-* build_dir/host* tmp/* /tmp/* /var/tmp/*
-          ls -la ../release-files/${{ matrix.config_name }}
+          # 只清本次编译产生的中间产物
+          rm -rf build_dir/ staging_dir/ logs/ bin/ dl/ tmp/ .config.old 2>/dev/null || true
+          rm -rf /tmp/pw /var/tmp/*
+          ls -la "${{ github.workspace }}/release-files/${{ matrix.config_name }}"
           df -h
 
       - name: Upload build artifacts
@@ -115,8 +145,8 @@ jobs:
           if-no-files-found: warn
 
   release:
-    needs: [detect-configs, build]
-    if: always()
+    needs: [check-upstream, build]
+    if: always() && needs.check-upstream.outputs.should_build == 'true'
     runs-on: ubuntu-24.04
     steps:
       - name: Download all firmware artifacts
@@ -124,7 +154,7 @@ jobs:
         with:
           path: all-artifacts
 
-      - name: Flatten release files with config prefix
+      - name: Collect release files without config prefix
         run: |
           mkdir -p final-release
           for dir in all-artifacts/ponwrt-*; do
@@ -132,7 +162,12 @@ jobs:
             cfg=$(basename "$dir" | sed 's/^ponwrt-//')
             for f in "$dir"/*; do
               [ -f "$f" ] || continue
-              cp "$f" "final-release/${cfg}-$(basename "$f")"
+              base=$(basename "$f")
+              if [ "$base" = "sha256sums" ]; then
+                cp "$f" "final-release/${cfg}-sha256sums"
+              else
+                cp "$f" "final-release/$base"
+              fi
             done
           done
           ls -la final-release
@@ -142,5 +177,14 @@ jobs:
         with:
           tag_name: ponwrt-all-v${{ github.run_number }}
           name: PonWrt All Supported Hardware Build #${{ github.run_number }}
+          body: |
+            Automated build for pbs05/ponwrt
+            upstream_sha: ${{ needs.check-upstream.outputs.upstream_sha }}
           files: final-release/*
           fail-on-unmatched-files: false
+
+      - name: Clean release staging directories
+        if: always()
+        run: |
+          rm -rf all-artifacts final-release /tmp/* /var/tmp/*
+          df -h
