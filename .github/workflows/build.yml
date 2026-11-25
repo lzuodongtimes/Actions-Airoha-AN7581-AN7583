@@ -41,13 +41,14 @@ jobs:
 
           if [ "$SHOULD_BUILD" = "true" ]; then
             git clone --depth=1 https://github.com/pbs05/ponwrt.git /tmp/check-ponwrt
-            # 只保留带完整 target 的整机配置（an7581 / an7583）；
-            # release.config 只是几个包的追加片段，没有 CONFIG_TARGET_*，单独编会退到默认
-            # mediatek/filogic 目标，内核 kconfig 交互提问直接失败
-            ALL=$(find /tmp/check-ponwrt/configs -maxdepth 1 -name '*.config' -exec basename {} .config \;)
+            # 只编 an7581 / an7583 两个整机配置；
+            # release.config 只是几个包的追加片段，没有 CONFIG_TARGET_*，
+            # 单独编会退到默认 mediatek/filogic 目标，内核 kconfig 交互提问直接失败
+            ALLOWED="an7581 an7583"
             KEEP=""
-            for c in $ALL; do
-              if grep -q "^CONFIG_TARGET_air" "/tmp/check-ponwrt/configs/$c.config"; then
+            for c in $ALLOWED; do
+              f="/tmp/check-ponwrt/configs/$c.config"
+              if [ -f "$f" ] && grep -q "^CONFIG_TARGET_air" "$f"; then
                 KEEP="$KEEP $c"
               fi
             done
@@ -127,33 +128,17 @@ jobs:
           sed -i 's/^CONFIG_PACKAGE_luci-theme-argon=y/# CONFIG_PACKAGE_luci-theme-argon is not set/' .config
           grep -q "CONFIG_PACKAGE_luci-theme-aurora" .config || echo "CONFIG_PACKAGE_luci-theme-aurora=y" >> .config
 
-          # 只保留 xg-040g-md（an7581 目标）和 xg-040g-mf（an7583 目标）两个设备
-          case "${{ matrix.config_name }}" in
-            an7581)
-              TARGET=airoha_an7581
-              DEVICES="nokia_xg-040g-md-ubi nokia_xg-040g-md-ubi-usb-sfp"
-              ;;
-            an7583)
-              TARGET=airoha_an7583
-              DEVICES="nokia_xg-040g-mf nokia_xg-040g-mf-ubi"
-              ;;
-            *)
-              TARGET=""
-              DEVICES=""
-              ;;
-          esac
-          if [ -n "$DEVICES" ]; then
-            grep -vE "^CONFIG_TARGET_DEVICE_${TARGET}_DEVICE_" .config > .config.tmp
-            grep -vE "^CONFIG_TARGET_DEVICE_PACKAGES_${TARGET}_DEVICE_" .config.tmp > .config
-            rm -f .config.tmp
-            for d in $DEVICES; do
-              echo "CONFIG_TARGET_DEVICE_${TARGET}_DEVICE_${d}=y" >> .config
-              echo "CONFIG_TARGET_DEVICE_PACKAGES_${TARGET}_DEVICE_${d}=\"\"" >> .config
-            done
-          fi
+          # 设备列表完全沿用源码 configs/*.config，编译该目标下全部机型
+
+          # 上游 feed 里 fkwnopd / luci-app-fkwnopd 的 Config.in 互相 select / depends，
+          # kconfig 会报 recursive dependency detected 让整个 defconfig 失败；
+          # 这两个包跟固件毫无关系，删目录后重新生成 kconfig 元数据即可
+          find /tmp/pw/feeds /tmp/pw/package/feeds -maxdepth 5 -name "*fkwnopd*" -exec rm -rf {} + 2>/dev/null || true
+          rm -rf /tmp/pw/tmp/.config-package.in /tmp/pw/tmp/.packageinfo
 
           make defconfig
-          grep -E "^CONFIG_TARGET_DEVICE_airoha_an758[13]_DEVICE_.*=y" .config
+          echo "选中的设备："
+          grep -E "^CONFIG_TARGET_DEVICE_airoha_an758[13]_DEVICE_.*=y" .config | sed 's/=y//'
           grep -E "^CONFIG_LUCI_LANG_zh_Hans=|^CONFIG_PACKAGE_luci-theme-" .config
 
       - name: Download sources, compile, collect outputs, and clean all junk
@@ -234,5 +219,5 @@ jobs:
       - name: Clean release staging directories
         if: always()
         run: |
-          rm -rf all-artifacts final-release /tmp/* /var/tmp/*
+          rm -rf all-artifacts final-release || true
           df -h
