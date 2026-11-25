@@ -136,17 +136,19 @@ jobs:
           fi
 
           # 2) 桥接流量能进 conntrack 的前提：CONFIG_BRIDGE_NETFILTER
-          #    nf_conntrack_bridge 里 VLAN/PPPoE 的解析代码（675 系列补丁）被
-          #    #if IS_ENABLED(CONFIG_BRIDGE_NETFILTER) 包着，不开这项时桥接的
-          #    PPPoE 帧根本进不了 conntrack，nft flow offload 永远建不出条目，
-          #    结果是千兆桥接全部逐包走 CPU（实测 busy ~47%）。
-          #    只改内核选项、不装 kmod-br-netfilter 包，避免把桥流量二次送进
-          #    iptables 规则集（bridge-nf-call-* 保持默认 0）。
-          sed -i 's/^# CONFIG_BRIDGE_NETFILTER is not set$/CONFIG_BRIDGE_NETFILTER=y/' .config
-          grep -q "^CONFIG_BRIDGE_NETFILTER=y" .config || echo "CONFIG_BRIDGE_NETFILTER=y" >> .config
-          sed -i 's/^# CONFIG_NF_DEFRAG_IPV4 is not set$/CONFIG_NF_DEFRAG_IPV4=y/' .config
-          grep -q "^CONFIG_NF_DEFRAG_IPV4=y" .config || echo "CONFIG_NF_DEFRAG_IPV4=y" >> .config
-          grep -E "^CONFIG_BRIDGE_NETFILTER=y|^CONFIG_NF_DEFRAG_IPV4=y" .config
+          #    nf_conntrack_bridge 的 VLAN/PPPoE 解析（675-02）和 netfilter_bridge.h
+          #    里的 nf_bridge_info 新字段都被 #if IS_ENABLED(...) 包着，不开这项
+          #    桥接的 PPPoE 帧进不了 conntrack，nft flow offload 建不出条目，
+          #    千兆桥接全部逐包走 CPU（实测 busy ~47%）。
+          #    必须改内核配置 target/linux/generic/config-6.18：
+          #    顶层 .config 只装包/目标选项，写进去会被后面的 make defconfig 丢掉。
+          #    取 =m 且不装 kmod-br-netfilter 包：模块编出来但不加载，运行行为不变。
+          KCONF=/tmp/pw/target/linux/generic/config-6.18
+          sed -i 's/^# CONFIG_BRIDGE_NETFILTER is not set$/CONFIG_BRIDGE_NETFILTER=m/' "$KCONF"
+          grep -q "^CONFIG_BRIDGE_NETFILTER=m" "$KCONF" || echo "CONFIG_BRIDGE_NETFILTER=m" >> "$KCONF"
+          sed -i 's/^# CONFIG_NF_DEFRAG_IPV4 is not set$/CONFIG_NF_DEFRAG_IPV4=y/' "$KCONF"
+          grep -q "^CONFIG_NF_DEFRAG_IPV4=y" "$KCONF" || echo "CONFIG_NF_DEFRAG_IPV4=y" >> "$KCONF"
+          grep -E "^CONFIG_BRIDGE_NETFILTER=m|^CONFIG_NF_DEFRAG_IPV4=y" "$KCONF"
 
 
           # md 也导出 preloader / bl31-uboot 文件（源码默认只给 mf 声明了 ARTIFACTS）
