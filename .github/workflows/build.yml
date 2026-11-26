@@ -114,29 +114,66 @@ jobs:
           git clone --depth=1 https://github.com/eamonxg/luci-theme-aurora.git /tmp/pw/package/luci-theme-aurora
           rm -rf /tmp/pw/package/luci-theme-aurora/.git
 
-      - name: Inject default config (restore rx-gro-list at boot)
+      - name: Restore upstream fraglist-GRO default (drop fork's revert patch)
         run: |
-          # 新内核（6.18.60）里 airoha_en7572 驱动默认把 GRO fraglist 关掉，
-          # 纯二层桥接（lan1 <-> pon0）场景下每包开销上升，实测吞吐 1150 -> 900 Mbps。
-          # 源码根 files/ 会被打进 rootfs，且覆盖 base-files 的同名文件。
-          mkdir -p /tmp/pw/files/etc
-          cat > /tmp/pw/files/etc/rc.local <<'EOF'
-          #!/bin/sh
-          # pon0 要等 XPON 到 O5 才有 carrier，rc.local 执行时可能还没就绪，
-          # 用有限次重试，成功即退出；失败也不影响开机。
-          for d in pon0 lan1; do
-              for i in 1 2 3 4 5 6 7 8; do
-                  ethtool -K "$d" rx-gro-list on 2>/dev/null
-                  ethtool -k "$d" 2>/dev/null | grep -q 'rx-gro-list: on' && break
-                  sleep 2
-              done
-          done
-          logger -t gro-fix "pon0 rx-gro-list: $(ethtool -k pon0 2>/dev/null | grep 'rx-gro-list')"
-          exit 0
-          EOF
-          chmod 755 /tmp/pw/files/etc/rc.local
-          echo "--- files/etc/rc.local ($(wc -c < /tmp/pw/files/etc/rc.local) bytes) ---"
-          cat /tmp/pw/files/etc/rc.local
+          cd /tmp/pw
+          # 默认值来源：
+          #   target/linux/generic/hack-6.18/600-net-enable-fraglist-GRO-by-default.patch
+          #     —— OpenWrt 上游补丁，让 NETIF_F_GRO_FRAGLIST 默认开启
+          #   target/linux/airoha/patches-6.18/980-revert-fraglist-gro-by-default.patch
+          #     —— pbs05 为 airoha 额外加的补丁，又把它翻回默认关闭
+          #   后者存在的原因（补丁说明）：fraglist GRO 会把同流 UDP 合并成超大 skb，
+          #   路由式 IPTV 组播转发在 ipmr_prepare_xmit() 里因 DF 位 + 超出口 MTU 被丢弃
+          #   （OpenWrt #25713 / #18214），单播转发不受影响。
+          #   本机是纯二层桥（lan1 <-> pon0），二层组播走 igmp snooping 不进 ipmr，
+          #   但 GRO fraglist 关闭会让桥接每包开销上升，实测吞吐 1150 -> 900 Mbps。
+          #   故仅删除该 fork 补丁，恢复上游默认，不新增任何自造代码。
+          GEN=target/linux/generic/hack-6.18/600-net-enable-fraglist-GRO-by-default.patch
+          REV=target/linux/airoha/patches-6.18/980-revert-fraglist-gro-by-default.patch
+          if [ ! -f "$GEN" ]; then
+            echo "::error::上游的 fraglist-GRO 默认开启补丁不存在：$GEN"
+            exit 1
+          fi
+          if [ ! -f "$REV" ]; then
+            echo "::error::pbs05 的 980 补丁不在了（可能已改名或已被上游移除），请复核后再决定是否继续"
+            exit 1
+          fi
+          rm -f "$REV"
+          echo "已移除 $REV"
+          echo "保留 $GEN"
+          ls target/linux/airoha/patches-6.18/ | grep -c . | sed 's/^/剩余 airoha 补丁数：/'
+
+      - name: Export XG-040G-MD preloader/bl31 ARTIFACTS
+        run: |
+          cd /tmp/pw
+          # 源码里 Device/nokia_xg-040g-md-ubi-images 没有声明 ARTIFACTS，
+          # 所以 md 产物目录只有 sysupgrade.itb / recovery.itb，没有 preloader.bin 和 bl31-uboot.fip。
+          # 这里补三条声明，让 md 也能产出这两个刷写/救砖用的文件。
+          # 对应的构建规则源码里已有（Build/an7581-preloader、Build/an7581-bl31-uboot，
+          # 走 U-Boot/an7581_nokia_xg-040g-md），不新增任何包。
+          python3 - <<'PY'
+          p = "target/linux/airoha/image/an7581.mk"
+          src = open(p, encoding="utf-8").read()
+          mark = "ARTIFACT/preloader.bin := an7581-preloader nokia_xg-040g-md"
+          if mark in src:
+              print("md ARTIFACTS 已存在，跳过")
+          else:
+              head = "define Device/nokia_xg-040g-md-ubi-images\n"
+              i = src.find(head)
+              assert i >= 0, "找不到 md 设备块，an7581.mk 结构可能变了"
+              j = src.find("\nendef", i)
+              assert j >= 0, "md 设备块缺少 endef"
+              add = ("\n  " + mark +
+                     "\n  ARTIFACT/bl31-uboot.fip := an7581-bl31-uboot nokia_xg-040g-md" +
+                     "\n  ARTIFACTS := preloader.bin bl31-uboot.fip")
+              src = src[:j] + add + src[j:]
+              open(p, "w", encoding="utf-8").write(src)
+              print("md ARTIFACTS 已注入")
+          PY
+          grep -A20 "^define Device/nokia_xg-040g-md-ubi-images" target/linux/airoha/image/an7581.mk | grep -E "ARTIFACT"
+          grep -q "ARTIFACTS := preloader.bin bl31-uboot.fip" target/linux/airoha/image/an7581.mk || {
+            echo "::error::md ARTIFACTS 注入后未生效"; exit 1;
+          }
 
       - name: Update and install feeds
         run: |
