@@ -114,6 +114,30 @@ jobs:
           git clone --depth=1 https://github.com/eamonxg/luci-theme-aurora.git /tmp/pw/package/luci-theme-aurora
           rm -rf /tmp/pw/package/luci-theme-aurora/.git
 
+      - name: Inject default config (restore rx-gro-list at boot)
+        run: |
+          # 新内核（6.18.60）里 airoha_en7572 驱动默认把 GRO fraglist 关掉，
+          # 纯二层桥接（lan1 <-> pon0）场景下每包开销上升，实测吞吐 1150 -> 900 Mbps。
+          # 源码根 files/ 会被打进 rootfs，且覆盖 base-files 的同名文件。
+          mkdir -p /tmp/pw/files/etc
+          cat > /tmp/pw/files/etc/rc.local <<'EOF'
+          #!/bin/sh
+          # pon0 要等 XPON 到 O5 才有 carrier，rc.local 执行时可能还没就绪，
+          # 用有限次重试，成功即退出；失败也不影响开机。
+          for d in pon0 lan1; do
+              for i in 1 2 3 4 5 6 7 8; do
+                  ethtool -K "$d" rx-gro-list on 2>/dev/null
+                  ethtool -k "$d" 2>/dev/null | grep -q 'rx-gro-list: on' && break
+                  sleep 2
+              done
+          done
+          logger -t gro-fix "pon0 rx-gro-list: $(ethtool -k pon0 2>/dev/null | grep 'rx-gro-list')"
+          exit 0
+          EOF
+          chmod 755 /tmp/pw/files/etc/rc.local
+          echo "--- files/etc/rc.local ($(wc -c < /tmp/pw/files/etc/rc.local) bytes) ---"
+          cat /tmp/pw/files/etc/rc.local
+
       - name: Update and install feeds
         run: |
           cd /tmp/pw
