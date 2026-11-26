@@ -395,7 +395,11 @@ jobs:
             || { echo "::error::bridge 解析补丁没有进入内核源码树"; exit 1; }
           BRNF=$(grep -m1 "^CONFIG_BRIDGE_NETFILTER=" "$KDIR/.config" || true)
           echo "BRIDGE_NETFILTER 实际值: ${BRNF:-未设置}"
-          echo "PACKAGE_kmod-br-netfilter: $(grep -m1 "^CONFIG_PACKAGE_kmod-br-netfilter=" /tmp/pw/.config || echo '未选中')"
+          BRNF_PKG=$(grep -m1 "^CONFIG_PACKAGE_kmod-br-netfilter=" /tmp/pw/.config || true)
+          echo "PACKAGE_kmod-br-netfilter: ${BRNF_PKG:-未选中}"
+          if [ "$BRNF_PKG" = "CONFIG_PACKAGE_kmod-br-netfilter=y" ]; then
+            echo "::error::kmod-br-netfilter 被打进固件，模块会自动加载，桥接会被抢包"; exit 1
+          fi
           case "$BRNF" in
             "CONFIG_BRIDGE_NETFILTER=y")
               echo "::error::br_netfilter 被编进内核本体，它会抢走翻转协议的 PPPoE 帧"; exit 1 ;;
