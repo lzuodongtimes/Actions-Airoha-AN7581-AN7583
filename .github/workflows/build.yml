@@ -182,6 +182,70 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
+      - name: Fix LuCI page tree cache (installed app menus never show)
+        run: |
+          cd /tmp/pw
+          # 已确认的 LuCI 缺陷（immortalwrt/luci 的 ucode dispatcher）：
+          #  1. build_pagetree() 把菜单树落盘成 /tmp/luci-indexcache.<指纹>.json，
+          #     指纹只看菜单文件的 ino|mtime|size，而“某条菜单该不该显示”的
+          #     satisfied 结论（uci/fs 依赖判断）也被一起写进这份缓存，
+          #     依赖后来满足了也不会重算。
+          #  2. apply_tree_acls() 直接就地修改进程级共享的 tree，一次未登录或
+          #     权限不全的访问，会把所有带 acl 的菜单永久标成隐藏，直到重启 uhttpd。
+          # 结果：插件包在、服务在跑，左侧菜单却永远不出现，
+          #       只能 rm /tmp/luci-indexcache* + 重启 uhttpd 才恢复。
+          # 修法：不落盘缓存 + 每次请求重建一棵新树（依赖每次现算，ACL 只改本次的新对象）。
+          python3 - <<'PY'
+          p = "feeds/luci/modules/luci-base/ucode/dispatcher.uc"
+          src = open(p, encoding="utf-8").read()
+
+          old_cache = 'let indexcache = "/tmp/luci-indexcache";'
+          new_cache = "let indexcache = null;"
+          old_menu = (
+              "function menu_json(acl) {\n"
+              "\ttree ??= build_pagetree();\n"
+              "\n"
+              "\tif (acl)\n"
+              "\t\tapply_tree_acls(tree, acl);\n"
+              "\n"
+              "\treturn tree;\n"
+              "}"
+          )
+          new_menu = (
+              "function menu_json(acl) {\n"
+              "\t/* Rebuild the tree on every call: menu files and their\n"
+              "\t * dependency state change at runtime, so a cached tree\n"
+              "\t * goes stale; a fresh tree also keeps the in-place\n"
+              "\t * apply_tree_acls() call from poisoning other requests. */\n"
+              "\tlet t = build_pagetree();\n"
+              "\n"
+              "\tif (acl)\n"
+              "\t\tapply_tree_acls(t, acl);\n"
+              "\n"
+              "\treturn t;\n"
+              "}"
+          )
+
+          if new_cache in src and new_menu in src:
+              print("LuCI dispatcher 已打过补丁，跳过")
+          else:
+              assert old_cache in src, "找不到 indexcache 声明，上游可能改了"
+              assert old_menu in src, "找不到 menu_json 原文，上游可能改了"
+              src = src.replace(old_cache, new_cache, 1)
+              src = src.replace(old_menu, new_menu, 1)
+              open(p, "w", encoding="utf-8", newline="").write(src)
+              print("LuCI dispatcher 已打补丁")
+          PY
+          grep -qF 'let indexcache = null;' feeds/luci/modules/luci-base/ucode/dispatcher.uc \
+            || { echo "::error::LuCI 缓存补丁未生效"; exit 1; }
+          grep -qF 'let t = build_pagetree();' feeds/luci/modules/luci-base/ucode/dispatcher.uc \
+            || { echo "::error::LuCI menu_json 补丁未生效"; exit 1; }
+          if grep -qF 'tree ??= build_pagetree();' feeds/luci/modules/luci-base/ucode/dispatcher.uc; then
+            echo "::error::dispatcher.uc 里仍有旧的进程级缓存 menu_json"; exit 1
+          fi
+          echo "LuCI 菜单缓存补丁校验通过"
+
+
       - name: Apply ${{ matrix.config_name }}.config with Aurora theme
         run: |
           cd /tmp/pw
